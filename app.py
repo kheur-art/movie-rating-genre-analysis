@@ -1,39 +1,107 @@
-import streamlit as st
-import pandas as pd
 
-# Page configuration
+from pathlib import Path
+
+import pandas as pd
+import streamlit as st
+
+# --------------------------------------------------
+# 1. PAGE CONFIGURATION
+# --------------------------------------------------
+
 st.set_page_config(
     page_title="Movie Rating & Genre Analysis",
     page_icon="🎬",
     layout="wide"
 )
 
-# Load movie data
-@st.cache_data
-def load_data():
-    df = pd.read_csv("cleaned_movies.csv")
+# Locate the CSV in the same folder as app.py
+BASE_DIR = Path(__file__).resolve().parent
+CSV_PATH = BASE_DIR / "cleaned_movies.csv"
 
-    df["movie_title"] = df["movie_title"].fillna("Unknown")
-    df["genre"] = df["genre"].fillna("Unknown")
+
+# --------------------------------------------------
+# 2. LOAD AND CLEAN DATA
+# --------------------------------------------------
+
+@st.cache_data
+def load_data(csv_path):
+    df = pd.read_csv(csv_path)
+
+    required_columns = [
+        "movie_title",
+        "genre",
+        "release_year",
+        "rating",
+        "num_votes"
+    ]
+
+    missing_columns = [
+        col for col in required_columns if col not in df.columns
+    ]
+
+    if missing_columns:
+        raise ValueError(
+            "Missing required CSV columns: "
+            + ", ".join(missing_columns)
+        )
+
+    df = df[required_columns].copy()
+
+    df["movie_title"] = (
+        df["movie_title"].fillna("Unknown").astype(str)
+    )
+    df["genre"] = (
+        df["genre"].fillna("Unknown").astype(str)
+    )
     df["release_year"] = pd.to_numeric(
         df["release_year"], errors="coerce"
     )
-    df["rating"] = pd.to_numeric(df["rating"], errors="coerce")
+    df["rating"] = pd.to_numeric(
+        df["rating"], errors="coerce"
+    )
     df["num_votes"] = pd.to_numeric(
         df["num_votes"], errors="coerce"
     )
 
-    return df.dropna(subset=["rating"])
+    df = df.dropna(subset=["rating"])
+    df = df[df["rating"].between(0, 10)]
 
-df = load_data()
+    return df
 
-# Sidebar
+
+# Show a helpful error instead of an unclear traceback
+if not CSV_PATH.is_file():
+    st.error(
+        "The file cleaned_movies.csv was not found. "
+        "Please upload it to the same GitHub folder as app.py."
+    )
+    st.write("Expected file location:", str(CSV_PATH))
+    st.stop()
+
+try:
+    df = load_data(str(CSV_PATH))
+except Exception as error:
+    st.error(f"Could not load the movie dataset: {error}")
+    st.stop()
+
+if df.empty:
+    st.error("The CSV does not contain any valid movie ratings.")
+    st.stop()
+
+
+# --------------------------------------------------
+# 3. SIDEBAR AND FILTERS
+# --------------------------------------------------
+
 st.sidebar.title("🎬 Movie Explorer")
-st.sidebar.write("Explore movie ratings and genres.")
+st.sidebar.write("Discover movies through IMDb data.")
 
-search = st.sidebar.text_input("Search movie title")
+search_query = st.sidebar.text_input(
+    "Search movie title",
+    placeholder="Enter a movie name..."
+)
 
-genres = sorted({
+all_genres = sorted({
     genre.strip()
     for values in df["genre"].dropna()
     for genre in str(values).split(",")
@@ -41,76 +109,105 @@ genres = sorted({
 })
 
 selected_genres = st.sidebar.multiselect(
-    "Select genre",
-    genres
+    "Filter by genre",
+    options=all_genres
 )
 
 min_rating = st.sidebar.slider(
-    "Minimum rating",
+    "Minimum IMDb rating",
     min_value=0.0,
     max_value=10.0,
     value=0.0,
     step=0.5
 )
 
-years = df["release_year"].dropna()
+valid_years = df["release_year"].dropna()
 
-if not years.empty:
-    min_year = int(years.min())
-    max_year = int(years.max())
+if not valid_years.empty:
+    min_year = int(valid_years.min())
+    max_year = int(valid_years.max())
 
-    year_range = st.sidebar.slider(
-        "Release year",
-        min_value=min_year,
-        max_value=max_year,
-        value=(min_year, max_year)
-    )
+    if min_year < max_year:
+        year_range = st.sidebar.slider(
+            "Release year",
+            min_value=min_year,
+            max_value=max_year,
+            value=(min_year, max_year)
+        )
+    else:
+        year_range = (min_year, max_year)
+        st.sidebar.caption(f"Release year: {min_year}")
 else:
     year_range = None
 
-# Apply filters
+st.sidebar.divider()
+st.sidebar.caption("Data source: IMDb dataset")
+
+
+# --------------------------------------------------
+# 4. APPLY FILTERS
+# --------------------------------------------------
+
 filtered = df.copy()
 
-if search:
+if search_query.strip():
     filtered = filtered[
         filtered["movie_title"].str.contains(
-            search, case=False, na=False
+            search_query.strip(),
+            case=False,
+            na=False,
+            regex=False
         )
     ]
 
 if selected_genres:
+    def matches_genre(value):
+        movie_genres = {
+            item.strip()
+            for item in str(value).split(",")
+        }
+        return bool(movie_genres.intersection(selected_genres))
+
     filtered = filtered[
-        filtered["genre"].apply(
-            lambda value: any(
-                genre in [
-                    item.strip()
-                    for item in str(value).split(",")
-                ]
-                for genre in selected_genres
-            )
-        )
+        filtered["genre"].apply(matches_genre)
     ]
 
-filtered = filtered[filtered["rating"] >= min_rating]
+filtered = filtered[
+    filtered["rating"] >= min_rating
+]
 
 if year_range is not None:
     filtered = filtered[
         filtered["release_year"].between(
-            year_range[0], year_range[1]
+            year_range[0],
+            year_range[1]
         )
     ]
 
-# Main dashboard
+
+# --------------------------------------------------
+# 5. MAIN DASHBOARD
+# --------------------------------------------------
+
 st.title("🎬 Movie Rating & Genre Analysis")
+
 st.write(
-    "Discover movie trends, compare genres, "
-    "and explore IMDb ratings."
+    "Explore movie ratings, discover popular genres, "
+    "and understand trends across release years."
 )
 
-# Summary metrics
-col1, col2, col3 = st.columns(3)
+st.caption(
+    f"Currently analysing {len(filtered):,} movies "
+    f"out of {len(df):,} movies in the dataset."
+)
 
-col1.metric("Total Movies", f"{len(filtered):,}")
+# Summary cards
+col1, col2, col3, col4 = st.columns(4)
+
+col1.metric(
+    "Movies",
+    f"{len(filtered):,}"
+)
 
 if not filtered.empty:
     col2.metric(
@@ -122,18 +219,31 @@ if not filtered.empty:
         "Highest Rating",
         f"{filtered['rating'].max():.1f}/10"
     )
+
+    col4.metric(
+        "Total Votes",
+        f"{filtered['num_votes'].sum():,.0f}"
+    )
 else:
     col2.metric("Average Rating", "—")
     col3.metric("Highest Rating", "—")
+    col4.metric("Total Votes", "—")
 
 st.divider()
 
-if filtered.empty:
-    st.warning("No movies match your selected filters.")
-else:
-    # Genre analysis
-    st.subheader("📊 Genre Analysis")
 
+# --------------------------------------------------
+# 6. GENRE ANALYSIS
+# --------------------------------------------------
+
+st.header("📊 Genre Analysis")
+
+if filtered.empty:
+    st.warning(
+        "No movies match these filters. "
+        "Try changing your search or filters."
+    )
+else:
     genre_data = filtered.assign(
         genre=filtered["genre"].str.split(",")
     ).explode("genre")
@@ -152,44 +262,125 @@ else:
     chart1, chart2 = st.columns(2)
 
     with chart1:
-        st.write("Movies by Genre")
-        st.bar_chart(genre_summary["Movie_Count"])
+        st.subheader("Movies by Genre")
+        st.bar_chart(
+            genre_summary["Movie_Count"],
+            x_label="Genre",
+            y_label="Number of Movies"
+        )
 
     with chart2:
-        st.write("Average Rating by Genre")
-        st.bar_chart(genre_summary["Average_Rating"])
+        st.subheader("Average Rating by Genre")
+        ratings_by_genre = genre_summary[
+            "Average_Rating"
+        ].sort_values(ascending=False)
 
-    # Release-year trends
-    st.subheader("📈 Ratings Over the Years")
+        st.bar_chart(
+            ratings_by_genre,
+            x_label="Genre",
+            y_label="Average Rating"
+        )
 
-    yearly = (
-        filtered.dropna(subset=["release_year"])
-        .groupby("release_year")["rating"]
-        .mean()
-        .sort_index()
+    st.caption(
+        "Movies with multiple genres are counted once "
+        "in each applicable genre."
     )
 
-    if not yearly.empty:
-        st.line_chart(yearly)
+    # --------------------------------------------------
+    # 7. RELEASE YEAR TRENDS
+    # --------------------------------------------------
 
-    # Top-rated movies
-    st.subheader("⭐ Top-Rated Movies")
+    st.header("📈 Movie Rating Trends Over Time")
+
+    yearly_data = filtered.dropna(
+        subset=["release_year"]
+    ).copy()
+
+    if not yearly_data.empty:
+        yearly_summary = (
+            yearly_data.groupby("release_year")
+            .agg(
+                Average_Rating=("rating", "mean"),
+                Movie_Count=("movie_title", "count")
+            )
+            .sort_index()
+        )
+
+        trend1, trend2 = st.columns(2)
+
+        with trend1:
+            st.subheader("Average Rating by Year")
+            st.line_chart(
+                yearly_summary["Average_Rating"],
+                x_label="Release Year",
+                y_label="Average Rating"
+            )
+
+        with trend2:
+            st.subheader("Movies Released by Year")
+            st.bar_chart(
+                yearly_summary["Movie_Count"],
+                x_label="Release Year",
+                y_label="Number of Movies"
+            )
+    else:
+        st.info("No valid release-year data is available.")
+
+    # --------------------------------------------------
+    # 8. TOP-RATED MOVIES
+    # --------------------------------------------------
+
+    st.header("⭐ Top-Rated Movies")
+
+    st.write(
+        "Movies with at least 1,000 votes are prioritised "
+        "to make ratings more meaningful."
+    )
 
     reliable_movies = filtered[
         filtered["num_votes"] >= 1000
     ]
 
     if not reliable_movies.empty:
-        top_movies = reliable_movies.nlargest(10, "rating")
+        top_movies = reliable_movies.nlargest(
+            10, "rating"
+        )
     else:
         st.info(
-            "No movies have at least 1,000 votes "
-            "under the current filters."
+            "No matching movies have at least 1,000 votes. "
+            "Showing the highest-rated matches instead."
         )
         top_movies = filtered.nlargest(10, "rating")
 
+    top_movies = top_movies[
+        [
+            "movie_title",
+            "genre",
+            "release_year",
+            "rating",
+            "num_votes"
+        ]
+    ].copy()
+
     st.dataframe(
-        top_movies[
+        top_movies,
+        use_container_width=True,
+        hide_index=True
+    )
+
+    # --------------------------------------------------
+    # 9. MOVIE EXPLORER
+    # --------------------------------------------------
+
+    st.header("🔎 Explore All Movies")
+
+    sorted_movies = filtered.sort_values(
+        "rating",
+        ascending=False
+    )
+
+    st.dataframe(
+        sorted_movies[
             [
                 "movie_title",
                 "genre",
@@ -202,24 +393,27 @@ else:
         hide_index=True
     )
 
-    # Movie explorer
-    st.subheader("🔎 Explore All Movies")
+    # Download the currently filtered results
+    csv_data = sorted_movies.to_csv(
+        index=False
+    ).encode("utf-8")
 
-    st.caption(f"Showing {len(filtered):,} matching movies.")
-
-    st.dataframe(
-        filtered[
-            [
-                "movie_title",
-                "genre",
-                "release_year",
-                "rating",
-                "num_votes"
-            ]
-        ].sort_values("rating", ascending=False),
-        use_container_width=True,
-        hide_index=True
+    st.download_button(
+        label="📥 Download filtered movies as CSV",
+        data=csv_data,
+        file_name="filtered_movies.csv",
+        mime="text/csv"
     )
 
+
+# --------------------------------------------------
+# 10. FOOTER
+# --------------------------------------------------
+
 st.divider()
-st.caption("Movie Rating & Genre Analysis | Data source: IMDb")
+
+st.caption(
+    "Movie Rating & Genre Analysis | "
+    "Built with Python, Pandas and Streamlit | "
+    "Dataset: IMDb"
+)
